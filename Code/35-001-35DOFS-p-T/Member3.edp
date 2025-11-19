@@ -1,0 +1,138 @@
+//
+//
+// y=4 ---------------------------------------
+// | __ |
+// d (4) | |__| obstaculo | b (2)
+// | |
+// y=0 ---------------------------------------
+// x=0 a (1) x=L
+//
+//
+verbosity = 0;
+load "iovtk"                           //// load library to write in vtk format
+load "BinaryIO"                        //// load libary to write the solution in binary form
+load "ffrandom";
+load "gsl"
+gslrng ffrng;
+// Macro
+macro grad(u) [dx(u), dy(u)] //
+macro div(u1, u2) (dx(u1) + dy(u2)) //
+macro Tau(u1,u2) [ [2*nu*dx(u1),nu*(dy(u1)+dx(u2))] , [nu*(dy(u1)+dx(u2)),2*nu*dy(u2)] ] // Viscous stress tensor
+
+// Domain
+real L=70, H = 30, D = 1., R = D/2, r = 0.15;
+real xCylinder = 20, yCylinder = H/2;
+real xRefini = xCylinder-R-1., xRefend = L-10, yRefinf = H/2 - 3, yRefsup = H/2 + 3;
+int NDofs = 35;
+int Nen = 35;
+
+real[int,int] coef(Nen,NDofs);
+
+ifstream fDataM3("a_r_ensemble.txt");
+for (int k = 0 ; k < Nen ; k++) {
+    fDataM3 >> coef(k,0) >> coef(k,1) >> coef(k,2) >> coef(k,3) >> coef(k,4) >> coef(k,5) >> coef(k,6) >> coef(k,7) >> coef(k,8) >> coef(k,9) >> coef(k,10) >> coef(k,11) >> coef(k,12) >> coef(k,13) >> coef(k,14) >> coef(k,15) >> coef(k,16) >> coef(k,17) >> coef(k,18) >> coef(k,19) >> coef(k,20) >> coef(k,21) >> coef(k,22) >> coef(k,23) >> coef(k,24) >> coef(k,25) >> coef(k,26) >> coef(k,27) >> coef(k,28) >> coef(k,29) >> coef(k,30) >> coef(k,31) >> coef(k,32) >> coef(k,33) >> coef(k,34);
+}
+//cout << coef << endl;
+real[int] a = [D/2, coef(0,0), coef(0,1), coef(0,2), coef(0,3), coef(0,4), coef(0,5), coef(0,6), coef(0,7), coef(0,8), coef(0,9), coef(0,10), coef(0,11), coef(0,12), coef(0,13), coef(0,14), coef(0,15), coef(0,16), coef(0,17), coef(0,18), coef(0,19), coef(0,20), coef(0,21), coef(0,22), coef(0,23), coef(0,24), coef(0,25), coef(0,26), coef(0,27), coef(0,28), coef(0,29), coef(0,30), coef(0,31), coef(0,32), coef(0,33), coef(0,34)];
+//cout << a[0] << a[1] << a [2] << a[3] << endl;
+
+border Am(t=0,L){x=t;y=0;label=1;};
+border Bm(t=0,H){x=L;y=t;label=2;};
+border Cm(t=L,0){x=t;y=H;label=3;};
+border Dm(t=H,0){x=0;y=t;label=4;};
+
+border am(t=xRefini,xRefend){x=t;y=yRefinf;label=999;};
+border bm(t=yRefinf,yRefsup){x=xRefend;y=t;label=999;};
+border cm(t=xRefend,xRefini){x=t;y=yRefsup;label=999;};
+border dm(t=yRefsup,yRefinf){x=xRefini;y=t;label=999;};
+
+int n=15, nn = 60, nnn = 200;
+border cylinder(t=0,2*pi){x=xCylinder + (a[0] + a[1]*cos(t) + a[2]*cos(2*t) + a[3]*cos(3*t) + a[4]*cos(4*t) + a[5]*cos(5*t) + a[6]*cos(6*t) + a[7]*cos(7*t) + a[8]*cos(8*t) + a[9]*cos(9*t) + a[10]*cos(10*t) + a[11]*cos(11*t) + a[12]*cos(12*t) + a[13]*cos(13*t) + a[14]*cos(14*t) + a[15]*cos(15*t) + a[16]*cos(16*t) + a[17]*cos(17*t) + a[18]*cos(18*t) + a[19]*cos(19*t) + a[20]*cos(20*t) + a[21]*cos(21*t) + a[22]*cos(22*t) + a[23]*cos(23*t) + a[24]*cos(24*t) + a[25]*cos(25*t) + a[26]*cos(26*t) + a[27]*cos(27*t) + a[28]*cos(28*t) + a[29]*cos(29*t) + a[30]*cos(30*t) + a[31]*cos(31*t) + a[32]*cos(32*t) + a[33]*cos(33*t) + a[34]*cos(34*t) + a[35]*cos(35*t))*cos(t) ;y=H/2+ (a[0] + a[1]*cos(t) + a[2]*cos(2*t) + a[3]*cos(3*t) + a[4]*cos(4*t) + a[5]*cos(5*t) + a[6]*cos(6*t) + a[7]*cos(7*t) + a[8]*cos(8*t) + a[9]*cos(9*t) + a[10]*cos(10*t) + a[11]*cos(11*t) + a[12]*cos(12*t) + a[13]*cos(13*t) + a[14]*cos(14*t) + a[15]*cos(15*t) + a[16]*cos(16*t) + a[17]*cos(17*t) + a[18]*cos(18*t) + a[19]*cos(19*t) + a[20]*cos(20*t) + a[21]*cos(21*t) + a[22]*cos(22*t) + a[23]*cos(23*t) + a[24]*cos(24*t) + a[25]*cos(25*t) + a[26]*cos(26*t) + a[27]*cos(27*t) + a[28]*cos(28*t) + a[29]*cos(29*t) + a[30]*cos(30*t) + a[31]*cos(31*t) + a[32]*cos(32*t) + a[33]*cos(33*t) + a[34]*cos(34*t) + a[35]*cos(35*t))*sin(t);label=5;}
+border cylref(t=0,2*pi){ x=xCylinder + ((a[0] + a[1]*cos(t) + a[2]*cos(2*t) + a[3]*cos(3*t) + a[4]*cos(4*t) + a[5]*cos(5*t) + a[6]*cos(6*t) + a[7]*cos(7*t) + a[8]*cos(8*t) + a[9]*cos(9*t) + a[10]*cos(10*t) + a[11]*cos(11*t) + a[12]*cos(12*t) + a[13]*cos(13*t) + a[14]*cos(14*t) + a[15]*cos(15*t) + a[16]*cos(16*t) + a[17]*cos(17*t) + a[18]*cos(18*t) + a[19]*cos(19*t) + a[20]*cos(20*t) + a[21]*cos(21*t) + a[22]*cos(22*t) + a[23]*cos(23*t) + a[24]*cos(24*t) + a[25]*cos(25*t) + a[26]*cos(26*t) + a[27]*cos(27*t) + a[28]*cos(28*t) + a[29]*cos(29*t) + a[30]*cos(30*t) + a[31]*cos(31*t) + a[32]*cos(32*t) + a[33]*cos(33*t) + a[34]*cos(34*t) + a[35]*cos(35*t))+r)*cos(t);y=H/2+((a[0] + a[1]*cos(t) + a[2]*cos(2*t) + a[3]*cos(3*t) + a[4]*cos(4*t) + a[5]*cos(5*t) + a[6]*cos(6*t) + a[7]*cos(7*t) + a[8]*cos(8*t) + a[9]*cos(9*t) + a[10]*cos(10*t) + a[11]*cos(11*t) + a[12]*cos(12*t) + a[13]*cos(13*t) + a[14]*cos(14*t) + a[15]*cos(15*t) + a[16]*cos(16*t) + a[17]*cos(17*t) + a[18]*cos(18*t) + a[19]*cos(19*t) + a[20]*cos(20*t) + a[21]*cos(21*t) + a[22]*cos(22*t) + a[23]*cos(23*t) + a[24]*cos(24*t) + a[25]*cos(25*t) + a[26]*cos(26*t) + a[27]*cos(27*t) + a[28]*cos(28*t) + a[29]*cos(29*t) + a[30]*cos(30*t) + a[31]*cos(31*t) + a[32]*cos(32*t) + a[33]*cos(33*t) + a[34]*cos(34*t) + a[35]*cos(35*t))+r)*sin(t);label=999;}
+
+//plot(cylinder(100)+cylref(100),wait=2);
+
+mesh Th=buildmesh(Am(n) + Bm(n) + Cm(n) + Dm(n) + cylinder(-2*nnn) + cylref(-nnn) + am(4*nn) + bm(2*nn) + cm(4*nn) + dm(0.8*nn));
+
+//plot(Th);
+
+fespace Xh(Th,P2);
+fespace Mh(Th,P1);
+fespace Wh(Th, [P1dc]);
+Xh u1,v1,u2,v2,up1=0,up2=0;
+Mh p,q;
+Wh w;
+
+real Re = 100, nu=1./Re;
+real dt=0.01, alpha=1/dt;
+int i=0, T = 150, ndt = T/dt;
+func f1=0;
+func f2=0;
+real[int] U1(ndt+1);
+
+// SDE solution
+real DeltaW;
+U1[0] = 0;
+real muSDE = 1, sigmaSDE =0.01, thetaSDE = 0.7;
+
+//ofstream vOut("dataEDP.txt");
+//vOut << setw(15) << U1[0] << endl;
+
+
+for (i=0;i<ndt;i++)
+{
+   DeltaW = gslrangaussian(ffrng, sqrt(dt));
+   U1[i+1] = U1[i] + thetaSDE*(muSDE-U1[i])*dt + sigmaSDE*DeltaW;
+//   vOut << setw(15) << U1[i] << endl;
+}
+
+
+problem ns(u1,u2,p,v1,v2,q,init=i) =
+int2d(Th)(
+alpha*(u1*v1+u2*v2)+
+nu*(dx(u1)*dx(v1)+dy(u1)*dy(v1) // bilinear part
++dx(u2)*dx(v2)+dy(u2)*dy(v2))
++p*q*0.000000001
+-p*dx(v1)-p*dy(v2)+
+q*dx(u1)+q*dy(u2)
+) // bilinear part
++int2d(Th)(-alpha*convect([up1,up2],-dt,up1)*v1
+-alpha*convect([up1,up2],-dt,up2)*v2
+-f1*v1-f2*v2) //right hand side
++on(1,u1=1,u2=0)
++on(2,p=0)
++on(3,u1=1,u2=0)
++on(4,u1=U1[i],u2=0)
++on(5,u1=0,u2=0)
+; // Dirichlet boundary condition
+
+
+ofstream ffP("Results/P_m03.dat");
+ofstream ffu("Results/u_m03.dat");
+ofstream ff3("Results/Drag_m03.dat");
+
+for (i=0;i<=ndt;i++)
+{
+cout << "i = " << i << endl;
+ns;
+up1=u1;
+up2=u2;
+w = -dy(u1) + dx(u2);
+real DragV = -int1d(Th,5) ( [1.,0]'*Tau(u1,u2)*[N.x,N.y] );
+real DragP = -int1d(Th,5) ( -p*N.x );
+real Drag = DragV + DragP;
+
+ff3 << Drag << " " << DragV << " " << DragP << endl;
+ffP << p(xCylinder+R,0) << endl;
+ffu << u1(20,1.5) << endl;
+
+cout<< "Valor de i = "<< i <<"\n";
+
+//plot(w,fill=true);
+//plot(coef=0.5,value=0,cmm= "Velocidad [u1, u2] ", [u1,u2]);
+};
+
+
+//plot(u1,wait=1,ps="vel2-obst.eps");
+//plot(cmm= "presion ", p,value=0,wait=1,ps="pres-obst.eps");
+
