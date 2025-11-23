@@ -1,107 +1,146 @@
-% ----------------------------------------------------------------------- %
-% --------------------------- Optimization of --------------------------- %
-% ---------------------------- Cylinder Wake ---------------------------- %
-% --------------------- with Stochastic Forcing term -------------------- %
-% ----------------------------------------------------------------------- %
-% ------------------------ Javier Lorente Macías ------------------------ %
-% ------------------------    Yacine Bengana     ------------------------ %
-% ----------------------------------------------------------------------- %
-clc;
-clear all;
-close all;
+function main()
+% MAIN Entry point for a generic EnVar optimization loop.
+% This version is problem-agnostic: it only requires a forward model handle
+% that maps a control vector to an observation and optional constraint
+% function handles. The bundled default configuration demonstrates the
+% workflow on a simple convex function f(x) = x(1)^2 + x(2)^2.
 
-name = ['Results/Drag_m01.dat';'Results/Drag_m02.dat';'Results/Drag_m03.dat';'Results/Drag_m04.dat';'Results/Drag_m05.dat';...
-'Results/Drag_m06.dat';'Results/Drag_m07.dat';'Results/Drag_m08.dat';'Results/Drag_m09.dat';'Results/Drag_m0T.dat';...
-'Results/Drag_m11.dat';'Results/Drag_m12.dat';'Results/Drag_m13.dat';'Results/Drag_m14.dat';'Results/Drag_m15.dat';...
-'Results/Drag_m16.dat';'Results/Drag_m17.dat';'Results/Drag_m18.dat';'Results/Drag_m19.dat';'Results/Drag_mTT.dat';...
-'Results/Drag_m21.dat';'Results/Drag_m22.dat';'Results/Drag_m23.dat';'Results/Drag_m24.dat';'Results/Drag_m25.dat';...
-'Results/Drag_m26.dat';'Results/Drag_m27.dat';'Results/Drag_m28.dat';'Results/Drag_m29.dat';'Results/Drag_m0Q.dat';...
-'Results/Drag_m31.dat';'Results/Drag_m32.dat';'Results/Drag_m33.dat';'Results/Drag_m34.dat';'Results/Drag_m35.dat';...
-];
+    cfg = default_config();
+    [state, history] = initialize_run(cfg);
 
-%% Initial computation
-Nen = 35;			               % Number of ensemble members
-lambda = 20;			           % Weight of the penalty term
-a_e = importdata('a_Initial.txt'); % Initial control vector
-e0 = norm(a_e)^2;	               % squared norm of the control vector
-a_e_mat(:,1) = a_e;
-N_Dofs = length(a_e);		       % Number of DOFs (components of the control vector)
+    for iter = 1:cfg.maxIterations
+        [ensemble, deviations] = build_ensemble(cfg, state.control);
+        writematrix(ensemble', "a_r_ensemble.txt", 'Delimiter', ' ');
 
-% Compute cost function corresponding to the initial geometry
-system(['FreeFem++ ' 'First.edp']);	% Freefem first geometry
-Cd = 2*importdata('Drag.dat');	    % Drag coefficient
-o_e = obs_vec(Cd(10000:end,1));	    % Observation vector
-Cost_Function(1,1) = o_e		% Cost function (mean drag coefficient, equal to the observation vector in this case)
-Cd = [];
+        observations = evaluate_ensemble(cfg, ensemble);
 
-% Compute cost function including penalty term
-for i = 1:N_Dofs
-    v(i,1) = (i)*a_e(i,1);	% Penalty term to ensure smooth geometries (first derivative)
-end
-val(1,1) = (1/2)*(norm(o_e))^2 + (1/2)*lambda*(norm(v))^2	% J = 1/2*norm(Drag_coefficient)^2 + penalty term
+        bounds = step_bounds(deviations, cfg.ensembleSize);
+        objective = @(w) Cost(state.observation, observations - state.observation, w, state.control, deviations, cfg.penaltyWeight);
+        constraints = cfg.constraintFcn;
+        options = optimset('GradConstr', 'off', 'GradObj', 'off', 'MaxFunEvals', 100000);
 
-%% Iterations
-for i = 1:30
+        [weights, ~] = fmincon(objective, zeros(cfg.ensembleSize, 1), [], [], [], [], bounds.lb, bounds.ub, constraints, options);
+        max(abs(deviations * weights)); %#ok<NOPRT> print maximum step size
 
-    % Generation of the ensemble members
-    a_r_ensemble = Ensemble(Nen, a_e);
-    writematrix(a_r_ensemble', "a_r_ensemble.txt",'Delimiter',' ');
-
-    % Deviation matrix, E'
-    E_prime = a_r_ensemble - a_e;
-    
-    % Run Nen simulations (one for each ensemble member)
-    system('sh RunSimulations.sh');
-    pause(1700) % Pause to get all drag files saved before continuing
-    
-    % Compute drag coefficient of each ensemble member
-    for k = 1:Nen
-        Cd = 2*importdata(name(k,:));
-        o_r_mat(k) = obs_vec(Cd(10000:end,1));
-        Cd = [];
+        state = update_control(cfg, state, deviations, weights);
+        history = record_iteration(cfg, history, state, iter);
     end
-    
-    % Compute observation matrix
-    H = (o_r_mat - o_e);
-    
-    % Constrain for small step vector size: |E*a|<eps
-    aaa = max(abs(E_prime));
+end
+
+% -------------------------------------------------------------------------
+function cfg = default_config()
+% DEFAULT_CONFIG Encapsulates all tunable parameters for the EnVar loop.
+% Users can swap out the demo forward model for any deterministic or
+% stochastic simulator by editing cfg.forwardModel and
+% cfg.observationReducer.
+
+    cfg.ensembleSize = 10;
+    cfg.penaltyWeight = 1;
+    cfg.maxIterations = 15;
+
+    % Forward model: maps a control vector to an observation.
+    cfg.forwardModel = @(x) demo_convex_model(x);
+
+    % Observation reducer: aggregates raw model outputs to a scalar (or
+    % vector) observation used by the cost function.
+    cfg.observationReducer = @(y) y; % identity for scalar outputs
+
+    % Constraint function: accepts weight vector w and returns [C, Ceq].
+    % Leave empty to disable constraints or replace with @demo_constraints
+    % to enforce a radius-limited step.
+    cfg.constraintFcn = [];
+
+    % Initialization
+    cfg.initialControlFile = 'a_Initial.txt';
+    cfg.initialControlFallback = [-0.25; 0.75];
+end
+
+% -------------------------------------------------------------------------
+function [state, history] = initialize_run(cfg)
+    if isfile(cfg.initialControlFile)
+        state.control = importdata(cfg.initialControlFile);
+    else
+        state.control = cfg.initialControlFallback;
+    end
+    state.initialNorm = norm(state.control)^2;
+    state.controlHistory = state.control;
+
+    rawObservation = cfg.forwardModel(state.control);
+    state.observation = cfg.observationReducer(rawObservation);
+
+    penaltyVector = (1:numel(state.control))' .* state.control;
+    history.costFunction = state.observation;
+    history.objective = 0.5 * norm(state.observation)^2 + 0.5 * cfg.penaltyWeight * norm(penaltyVector)^2;
+end
+
+% -------------------------------------------------------------------------
+function [ensemble, deviations] = build_ensemble(cfg, controlVector)
+    ensemble = Ensemble(cfg.ensembleSize, controlVector);
+    deviations = ensemble - controlVector;
+end
+
+% -------------------------------------------------------------------------
+function observations = evaluate_ensemble(cfg, ensemble)
+% EVALUATE_ENSEMBLE Runs the forward model for each ensemble member and
+% reduces the output to the observation space expected by the cost
+% function.
+
+    observations = zeros(cfg.ensembleSize, 1);
+    for k = 1:cfg.ensembleSize
+        raw = cfg.forwardModel(ensemble(:, k));
+        observations(k) = cfg.observationReducer(raw);
+    end
+end
+
+% -------------------------------------------------------------------------
+function bounds = step_bounds(deviations, ensembleSize)
+    aaa = max(abs(deviations));
     bbb = 10.^floor(log10(aaa));
-    bbb = ((1./bbb))'*Nen;
-    LB = -ones(Nen,1).*bbb/Nen^2;	% Lower bound
-    UB = ones(Nen,1).*bbb/Nen^2;	% Upper bound
-
-    % Solve optimization problem
-    J = @(w) Cost(o_e, H, w, a_e, E_prime, lambda);	% Cost function
-    Con = @(w) Constraints(a_e, E_prime, e0, w);	% Constraints
-    Hess = @(w,lambda) Hessianfcn(w,lambda,E_prime,H);	% Hessian matrix
-    options = optimset('GradConstr','off','GradObj','off','MaxFunEvals',100000);
-    [w_opt, J_opt] = fmincon(J, rand(Nen,1), [], [], [], [], LB, UB, Con, options); % Optimal weight vector and cost function
-    max(abs(E_prime*w_opt))	% Print maximum step size (just to check it is small)
-    
-    % Update control vector
-    a_e = a_e + E_prime*w_opt;
-    a_e_mat(:,i+1) = a_e;
-    delete 'a_e.txt';
-    writematrix(a_e, "a_e.txt",'Delimiter',' ');
-    
-    % Run simulation for the optimal control vector
-    system(['FreeFem++ ' 'Second.edp']);
-    Cd = 2*importdata('DragSecond.dat');
-    o_e = obs_vec(Cd(10000:end,1));
-    Cost_Function(1,i+1) = o_e
-    writematrix([i,o_e], "Cost_Iter.txt",'Delimiter',' ');
-    Cd = [];
-    
-    % Compute cost function including penalty term of the optimal solution
-    for j = 1:N_Dofs
-        v(j,1) = (j)*a_e(j,1);
-    end
-    val(i+1,1) = (1/2)*(norm(o_e))^2 + (1/2)*lambda*(norm(v))^2
-    
-    % Save variables
-    writematrix(a_e_mat, "Evolution_a_e.txt",'Delimiter',' ');	 % Evolution of the optimal control vector
-    writematrix(Cost_Function', "Cost_Function.txt",'Delimiter',' '); % Evolution of the drag coefficient
-    writematrix(val, "J_Obj.txt",'Delimiter', ' ');			% Evolution of the cost function (including penalty term)
+    bbb = ((1 ./ bbb))' * ensembleSize;
+    bounds.lb = -ones(ensembleSize, 1) .* bbb / ensembleSize^2;
+    bounds.ub = ones(ensembleSize, 1) .* bbb / ensembleSize^2;
 end
 
+% -------------------------------------------------------------------------
+function state = update_control(cfg, state, deviations, weights)
+    state.control = state.control + deviations * weights;
+    state.controlHistory(:, end + 1) = state.control;
+    writematrix(state.control, "a_e.txt", 'Delimiter', ' ');
+
+    rawObservation = cfg.forwardModel(state.control);
+    state.observation = cfg.observationReducer(rawObservation);
+end
+
+% -------------------------------------------------------------------------
+function history = record_iteration(cfg, history, state, iteration)
+    writematrix([iteration, state.observation], "Cost_Iter.txt", 'Delimiter', ' ');
+
+    penaltyVector = (1:numel(state.control))' .* state.control;
+    iterationObjective = 0.5 * norm(state.observation)^2 + 0.5 * cfg.penaltyWeight * norm(penaltyVector)^2;
+
+    history.costFunction(1, iteration + 1) = state.observation;
+    history.objective(iteration + 1, 1) = iterationObjective;
+
+    writematrix(state.controlHistory, "Evolution_a_e.txt", 'Delimiter', ' ');
+    writematrix(history.costFunction', "Cost_Function.txt", 'Delimiter', ' ');
+    writematrix(history.objective, "J_Obj.txt", 'Delimiter', ' ');
+end
+
+% -------------------------------------------------------------------------
+function y = demo_convex_model(x)
+% DEMO_CONVEX_MODEL Simple convex objective used as the default forward
+% model. It demonstrates the EnVar architecture without any CFD or PDE
+% dependencies.
+
+    y = sum(x.^2);
+end
+
+% -------------------------------------------------------------------------
+function [C, Ceq] = demo_constraints(w)
+% DEMO_CONSTRAINTS Optional example constraint: limit the step norm to 0.5.
+% Replace cfg.constraintFcn with @demo_constraints to activate.
+
+    maxRadius = 0.5;
+    C = norm(w) - maxRadius;
+    Ceq = [];
+end
