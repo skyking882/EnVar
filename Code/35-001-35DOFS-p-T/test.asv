@@ -1,0 +1,130 @@
+% ----------------------------------------------------------------------- %
+% ----------------------- EnVar Optimization Test ----------------------- %
+% ------------------- Convex Analytical Function Case ------------------- %
+% ----------------------------------------------------------------------- %
+clc;
+clear all;
+close all;
+
+%% 1. Initialization
+Nen = 3;                       % Number of ensemble members
+N_Dofs = 3;                    % Number of Degrees of Freedom
+lambda = 0;                     % Set penalty to 0 for pure target tracking test
+                                % (Or set to 20 to test if Cost.m penalty logic works)
+
+% Define a Target Vector (The "Optimal" Shape we want to find)
+% Let's say we want all coefficients to be 0.
+a_target = zeros(N_Dofs, 1); 
+
+% Initial Guess (Start far away from the target to see convergence)
+a_e = ones(N_Dofs, 1) * 0.5; 
+e0 = norm(a_e)^2; 
+
+% Storage for plotting
+history_error = [];
+% History for plotting trajectory
+history_a = a_e;
+
+% Prepare Visualization
+figure('Position', [100, 100, 800, 600]);
+[X, Y] = meshgrid(-2.5:0.1:2.5, -2.5:0.1:2.5);
+Z = X.^2 + Y.^2;
+contour(X, Y, Z, 20); hold on;
+colorbar;
+title('EnVar Optimization: Walking down the Paraboloid');
+xlabel('x'); ylabel('y');
+axis equal; grid on;
+
+% Plot Initial Point
+h_point = plot(a_e(1), a_e(2), 'ro', 'MarkerFaceColor', 'r', 'MarkerSize', 8, 'DisplayName', 'Mean State');
+h_ens   = plot(NaN, NaN, 'b.', 'MarkerSize', 5, 'DisplayName', 'Ensemble');
+h_traj  = plot(a_e(1), a_e(2), 'k-', 'LineWidth', 1, 'DisplayName', 'Trajectory');
+legend([h_point, h_ens, h_traj]);
+
+fprintf('Start: x=%.2f, y=%.2f, Cost=%.4f\n', a_e(1), a_e(2), norm(a_e)^2);
+
+fprintf('Starting Optimization Test...\n');
+fprintf('Goal: Drive all coefficients from 0.5 to 0.0\n\n');
+
+%% 2. Optimization Loop
+for iter = 1:20
+
+    % --- A. Ensemble Generation ---
+    % Calls the existing Ensemble.m function
+    % Note: Ensemble.m expects non-zero inputs to work best due to sqrt() logic
+    a_r_ensemble = Ensemble(Nen, a_e);
+    
+    % Deviation matrix, E'
+    E_prime = a_r_ensemble - a_e;
+
+
+    % --- Visualization Update ---
+    % Plot ensemble members (scattered around the mean)
+    set(h_ens, 'XData', a_r_ensemble(1,:), 'YData', a_r_ensemble(2,:));
+    drawnow; 
+    pause(0.2); % Pause to see the scatter
+    
+    % --- B. "Virtual" Simulation (Replaces FreeFem++ loop) ---
+    % In the real code, this compares CFD Drag to a target.
+    % Here, we simply observe the difference between our shape and the target.
+    
+    % 1. Observe the Mean State
+    % "Physics": Observation = Current_State - Target_State
+    o_e = (a_e - a_target); 
+    
+    % 2. Observe the Ensemble Members
+    o_r_mat = zeros(length(o_e), Nen);
+    for k = 1:Nen
+        member_a = a_r_ensemble(:, k);
+        % Apply the same "Physics" to the member
+        o_r_mat(:, k) = (member_a - a_target); 
+    end
+    
+    % --- C. Compute Observation Matrix H ---
+    % H maps the ensemble perturbations to observation perturbations
+    H = (o_r_mat - o_e);
+    
+    % --- D. Solve Optimization Problem ---
+    % We define the Cost Function using the existing Cost.m
+    % J = Cost(o_e, H, w, a_e, E_prime, lambda)
+    J_fun = @(w) Cost(o_e, H, w, a_e, E_prime, lambda);
+    
+    % Constraints
+    % Note: We use empty [] constraints here to test pure convergence. 
+    % The original Constraints.m enforces specific geometric properties (like cylinder length)
+    % which would conflict with our arbitrary "Target = 0" goal.
+    LB = -Inf(Nen, 1); 
+    UB = Inf(Nen, 1);
+    
+    options = optimset('Display','off', 'Algorithm', 'sqp');
+    
+    % Run fmincon
+    % Start with zero weights
+    w0 = zeros(Nen, 1);
+    [w_opt, J_opt] = fmincon(J_fun, w0, [], [], [], [], LB, UB, [], options);
+    
+    % --- E. Update Control Vector ---
+    step_size = max(abs(E_prime * w_opt));
+    a_e = a_e + E_prime * w_opt;
+    
+    % --- F. Logging ---
+    current_error = norm(a_e - a_target);
+    history_error = [history_error; current_error];
+    
+    fprintf('Iter %d | Cost: %.6f | Error Norm: %.6f | Max Step: %.6f\n', ...
+        iter, J_opt, current_error, step_size);
+        
+    % Stop if converged
+    if current_error < 1e-6
+        fprintf('\nConverged!\n');
+        break;
+    end
+end
+
+%% 3. Results
+figure;
+plot(history_error, '-o', 'LineWidth', 2);
+xlabel('Iteration');
+ylabel('Error (Distance from Target)');
+title('EnVar Optimization Convergence Test');
+grid on;

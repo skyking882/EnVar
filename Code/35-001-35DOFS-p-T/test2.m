@@ -1,0 +1,174 @@
+% ----------------------------------------------------------------------- %
+% ---------------- EnVar Toy: Fourier Basis Reconstruction -------------- %
+% --------- Optimise Fourier coefficients to match a target mode -------- %
+% ----------------------------------------------------------------------- %
+clc;
+clear; close all;
+
+%% 1. Problem setup
+Nen       = 3;        % Number of ensemble members
+N_modes   = 3;        % Number of Fourier modes (controls)
+lambda    = 0.0;      % Regularisation strength (0 = off)
+N_t       = 200;      % Number of time samples in [0, 2*pi]
+
+% Time grid
+t = linspace(0, 2*pi, N_t).';     % column vector (N_t x 1)
+
+% Fourier basis: phi_n(t) = sin(n t), n = 1...N_modes
+Phi = zeros(N_t, N_modes);
+for n = 1:N_modes
+    Phi(:,n) = sin(n * t);
+end
+
+% Choose a target mode: here mode 2
+a_target = zeros(N_modes, 1);
+a_target(1) = 2.4;
+a_target(2) = -1.1;                 % target = pure sin(2t)
+
+y_target = Phi * a_target;         % target signal
+
+% Initial guess in coefficient space (deliberately wrong)
+a_e = [0.8; -0.5; 0.3];
+
+% Storage
+history_a     = a_e;               % trajectory in coefficient space
+history_error = [];                % misfit in observation space
+
+fprintf('Fourier EnVar toy:\n');
+fprintf('y(t; a) = sum_n a_n sin(n t), target = sin(2t)\n');
+fprintf('J_true(a) = 0.5 * ||Phi a - Phi a_target||^2 + 0.5*lambda*||L a||^2\n');
+fprintf('Initial a = [%.2f %.2f %.2f]^T\n\n', a_e(1), a_e(2), a_e(3));
+
+%% 2. Precompute true cost J_true on (a1,a2) grid for visualisation (a3=0)
+a1_range = 0:0.03:4;
+a2_range = -1.5:0.03:1.5;
+[A1, A2] = meshgrid(a1_range, a2_range);
+
+J_grid = zeros(size(A1));
+for i = 1:numel(A1)
+    a_vec       = [A1(i); A2(i); 0];        % a3 = 0 slice
+    y           = Phi * a_vec;
+    misfit      = y - y_target;
+    J_true_val  = 0.5 * (misfit' * misfit);
+    if lambda > 0
+       L = diag(1:N_modes);
+       J_true_val = J_true_val + 0.5 * lambda * norm(L * a_vec)^2;
+    end
+    J_grid(i) = J_true_val;
+end
+
+%% 3. Prepare visualisation: J_true(a1,a2) and mean trajectory
+figure('Position', [50, 100, 800, 600]);
+contourf(A1, A2, J_grid, 40, 'LineColor', 'none'); hold on;
+colorbar;
+title('EnVar on Fourier coefficients: J_{true}(a_1,a_2; a_3=0)');
+xlabel('a_1 (sin t)'); ylabel('a_2 (sin 2t)');
+axis equal tight; grid on;
+
+% Plot target point (a_target)
+plot(a_target(1), a_target(2), 'ys', 'MarkerSize', 10, ...
+     'MarkerFaceColor', 'y', 'DisplayName', 'Target a^*');
+
+% Initialise mean + ensemble + trajectory handles
+h_mean = plot(a_e(1), a_e(2), 'ro', 'MarkerFaceColor', 'r', ...
+              'MarkerSize', 8, 'DisplayName', 'Mean');
+h_ens  = plot(NaN, NaN, 'b.', 'MarkerSize', 10, ...
+              'DisplayName', 'Ensemble');
+h_traj = plot(a_e(1), a_e(2), 'k-', 'LineWidth', 1.5, ...
+              'DisplayName', 'Trajectory');
+legend('show', 'Location', 'best');
+
+%% 4. Prepare second figure: signals (target vs current)
+figure('Position', [900, 100, 800, 600]);
+h_target = plot(t, y_target, 'k-', 'LineWidth', 1.5, ...
+                'DisplayName', 'Target y^*(t)'); hold on;
+y_init   = Phi * a_e;
+h_curr   = plot(t, y_init, 'r--', 'LineWidth', 1.5, ...
+                'DisplayName', 'Current y(t;a)');
+xlabel('t'); ylabel('y');
+title('Signal reconstruction: target vs current');
+grid on;
+legend('show', 'Location', 'best');
+
+%% 5. EnVar optimisation loop
+maxIter = 100;
+alpha   = 2.0;      % relaxation factor (<1 to slow updates)
+
+for iter = 1:maxIter
+
+    % --- A. Generate ensemble in coefficient space ----------------------
+    a_r_ensemble = Ensemble(Nen, a_e);      % N_modes x Nen
+    E_prime      = a_r_ensemble - a_e;      % N_modes x Nen
+
+    % --- B. Build observations (signal mismatch) ------------------------
+    % Observation: o(a) = Phi*a - y_target, dimension = N_t
+    y_e = Phi * a_e;
+    o_e = y_e -y_target;                   % N_t x 1
+
+    o_r_mat = zeros(N_t, Nen);
+    for k = 1:Nen
+        a_k        = a_r_ensemble(:,k);
+        y_k        = Phi * a_k;
+        o_r_mat(:,k) = y_k - y_target;
+    end
+
+    % Observation perturbation matrix H (N_t x Nen)
+    H = o_r_mat - o_e;
+
+    % --- C. Local cost in weight space, solve for w ---------------------
+    J_fun = @(w) Cost(o_e, H, w, a_e, E_prime, lambda);
+
+    w0   = zeros(Nen,1);
+    LB   = -Inf(Nen,1);
+    UB   =  Inf(Nen,1);
+    opts = optimset('Display','off', 'Algorithm','sqp');
+
+    [w_opt, J_loc] = fmincon(J_fun, w0, [], [], [], [], LB, UB, [], opts);
+
+    % --- D. Update mean in coefficient space ----------------------------
+    step_vec  = E_prime * w_opt;
+    a_e       = a_e + alpha * step_vec;
+
+    % Store trajectory
+    history_a(:, end+1) = a_e;
+
+    % Compute true cost and error in observation space
+    y_e      = Phi * a_e;
+    misfit   = y_e - y_target;
+    J_true   = 0.5 * (misfit' * misfit);
+    if lambda > 0
+        L = diag(1:N_modes);
+        J_true = J_true + 0.5 * lambda * norm(L * a_e)^2;
+    end
+    err_obs  = norm(misfit);
+    history_error = [history_error; err_obs];
+
+    % --- E. Update plots -------------------------------------------------
+    % Coefficient space
+    set(h_ens,  'XData', a_r_ensemble(1,:), 'YData', a_r_ensemble(2,:));
+    set(h_mean, 'XData', a_e(1),            'YData', a_e(2));
+    set(h_traj, 'XData', history_a(1,:),    'YData', history_a(2,:));
+
+    % Signal plot
+    set(0, 'CurrentFigure', gcf); % ensure second figure active
+    set(h_curr, 'YData', y_e);
+
+    drawnow;
+
+    % --- F. Logging ------------------------------------------------------
+    fprintf('Iter %2d | J_loc(w)=%.3e | J_true(a)=%.3e | ||Phi a - y^*||=%.3e | a=[%.3f %.3f %.3f]^T\n', ...
+            iter, J_loc, J_true, err_obs, a_e(1), a_e(2), a_e(3));
+
+    if err_obs < 1e-6
+        fprintf('Converged: ||Phi a - y^*|| < 1e-6.\n');
+        break;
+    end
+end
+
+%% 6. Error convergence figure
+figure;
+plot(history_error, '-o', 'LineWidth', 1.5);
+xlabel('Iteration');
+ylabel('||Phi a - y^*||_2');
+title('EnVar convergence (signal misfit)');
+grid on;
