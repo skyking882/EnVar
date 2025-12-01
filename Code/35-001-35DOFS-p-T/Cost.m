@@ -5,7 +5,6 @@ function [J, dJ, Hessian] = Cost(o_e, H, a, u_e, E_prime, lambda)
     for i = 1:N_Dofs
         v(i,1) = (i)*(u_e(i,1) + E_prime(i,:)*a);
     end
-
     % Cost Function
     J = (1/2)*(norm(o_e + H*a))^2 + (1/2)*lambda*(norm(v))^2;
     
@@ -21,7 +20,7 @@ function [J, dJ, Hessian] = Cost(o_e, H, a, u_e, E_prime, lambda)
 	    end
         df(i,1) = s;
 	end
-    df = df/norm(vv);
+    df = df/norm(v);
 
 
 	dJ = dJ + lambda*df;

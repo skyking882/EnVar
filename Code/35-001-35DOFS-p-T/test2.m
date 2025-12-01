@@ -22,13 +22,13 @@ end
 
 % Choose a target mode: here mode 2
 a_target = zeros(N_modes, 1);
-a_target(1) = 2.4;
+a_target(1) = 1.4;
 a_target(2) = -1.1;                 % target = pure sin(2t)
 
 y_target = Phi * a_target;         % target signal
 
 % Initial guess in coefficient space (deliberately wrong)
-a_e = [0.8; -0.5; 0.3];
+a_e = [2; 4; 0.3];
 
 % Storage
 history_a     = a_e;               % trajectory in coefficient space
@@ -91,14 +91,16 @@ grid on;
 legend('show', 'Location', 'best');
 
 %% 5. EnVar optimisation loop
-maxIter = 100;
-alpha   = 2.0;      % relaxation factor (<1 to slow updates)
+maxIter = 25;
+alpha   = 0.9;      % relaxation factor (<1 to slow updates)
 
 for iter = 1:maxIter
 
     % --- A. Generate ensemble in coefficient space ----------------------
     a_r_ensemble = Ensemble(Nen, a_e);      % N_modes x Nen
     E_prime      = a_r_ensemble - a_e;      % N_modes x Nen
+        writematrix(a_r_ensemble', "a_r_ensemble.txt",'Delimiter',' ');
+
 
     % --- B. Build observations (signal mismatch) ------------------------
     % Observation: o(a) = Phi*a - y_target, dimension = N_t
@@ -114,6 +116,8 @@ for iter = 1:maxIter
 
     % Observation perturbation matrix H (N_t x Nen)
     H = o_r_mat - o_e;
+    [AA,BB,CC]=svd(H);
+    fprintf('sigular of H = %2d \n',[BB(1,1),BB(2,2),BB(3,3)])
 
     % --- C. Local cost in weight space, solve for w ---------------------
     J_fun = @(w) Cost(o_e, H, w, a_e, E_prime, lambda);
@@ -121,13 +125,15 @@ for iter = 1:maxIter
     w0   = zeros(Nen,1);
     LB   = -Inf(Nen,1);
     UB   =  Inf(Nen,1);
-    opts = optimset('Display','off', 'Algorithm','sqp');
+    opts = optimset('Disp','None');
 
     [w_opt, J_loc] = fmincon(J_fun, w0, [], [], [], [], LB, UB, [], opts);
 
     % --- D. Update mean in coefficient space ----------------------------
     step_vec  = E_prime * w_opt;
     a_e       = a_e + alpha * step_vec;
+    [J_val,dJ,HHH] = Cost(o_e, H, w_opt, a_e, E_prime, lambda);
+    fprintf('dJ = %2d \n',[dJ])
 
     % Store trajectory
     history_a(:, end+1) = a_e;
@@ -148,13 +154,12 @@ for iter = 1:maxIter
     set(h_ens,  'XData', a_r_ensemble(1,:), 'YData', a_r_ensemble(2,:));
     set(h_mean, 'XData', a_e(1),            'YData', a_e(2));
     set(h_traj, 'XData', history_a(1,:),    'YData', history_a(2,:));
-
+     
     % Signal plot
     set(0, 'CurrentFigure', gcf); % ensure second figure active
     set(h_curr, 'YData', y_e);
 
     drawnow;
-
     % --- F. Logging ------------------------------------------------------
     fprintf('Iter %2d | J_loc(w)=%.3e | J_true(a)=%.3e | ||Phi a - y^*||=%.3e | a=[%.3f %.3f %.3f]^T\n', ...
             iter, J_loc, J_true, err_obs, a_e(1), a_e(2), a_e(3));
